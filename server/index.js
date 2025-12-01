@@ -35,18 +35,36 @@ function getAsync(sql, params = []) {
 // Auth
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body
-  if (!username || !password) return res.status(400).json({ error: 'username/password required' })
+  if (!username || !password) return res.status(400).json({ error: 'Wszystkie pola są wymagane' })
   try {
     const user = await getAsync('SELECT * FROM users WHERE username = ?', [username])
-    if (!user) return res.status(401).json({ error: 'invalid credentials' })
+    if (!user) return res.status(401).json({ error: 'Niepoprawny login lub hsało' })
     const ok = await bcrypt.compare(password, user.password)
-    if (!ok) return res.status(401).json({ error: 'invalid credentials' })
+    if (!ok) return res.status(401).json({ error: 'Niepoprawny login lub hsało' })
     const token = jwt.sign({ id: user.id, role: user.role, name: user.name }, JWT_SECRET, { expiresIn: '8h' })
     res.json({ token, user: { id: user.id, name: user.name, role: user.role } })
   } catch (err) {
     console.error(err)
     res.status(500).json({ error: 'server error' })
   }
+})
+
+app.post('/api/auth/register', async (req, res) => {
+    const { username, password, name, role } = req.body
+    if (!username || !password || !name || !role) return res.status(400).json({ error: 'username/password/name/role required' + username })
+    try {
+        const existing = await getAsync('SELECT * FROM users WHERE username = ?', [username])
+        if (existing) return res.status(400).json({ error: 'username taken' })
+        const hashed = await bcrypt.hash(password, 10)
+        const id = uuid()
+        await runAsync('INSERT INTO users (id, username, password, name, role) VALUES (?, ?, ?, ?, ?)', [id, username, hashed, name, role])
+        const user = await getAsync('SELECT * FROM users WHERE id = ?', [id])
+        const token = jwt.sign({ id: user.id, role: user.role, name: user.name }, JWT_SECRET, { expiresIn: '8h' })
+        res.status(201).json({ token, user: { id: user.id, name: user.name, role: user.role } })
+    } catch (err) {
+        console.error(err)
+        res.status(500).json({ error: 'server error' })
+    }
 })
 
 function authMiddleware(req, res, next) {
@@ -182,10 +200,84 @@ app.get('/api/borrowings', authMiddleware, async (req, res) => {
   }
 })
 
-app.get('/api/users', authMiddleware, requireRole('admin'), async (req, res) => {
+app.get('/api/users', authMiddleware, requireRole('librarian', 'admin'), async (req, res) => {
+  const q = (req.query.q || '').toString().trim().toLowerCase()
+  const user = req.user
   try {
-    const users = await allAsync('SELECT id, username, name, role FROM users ORDER BY name')
-    res.json(users)
+    if (!q) {
+      let users
+      if (user.role === 'librarian') {
+        users = await allAsync('SELECT id, username, name, role FROM users WHERE role != ? ORDER BY name', ['admin'])
+      } else {
+        users = await allAsync('SELECT id, username, name, role FROM users ORDER BY name')
+      }
+      return res.json(users)
+    } else {
+      const like = `%${q}%`
+      let users
+      if (user.role === 'librarian') {
+        users = await allAsync(
+          'SELECT id, username, name, role FROM users WHERE (lower(username) LIKE ? OR lower(name) LIKE ?) AND role != ? ORDER BY name',
+          [like, like, 'admin'],
+        )
+      } else {
+        users = await allAsync(
+          'SELECT id, username, name, role FROM users WHERE lower(username) LIKE ? OR lower(name) LIKE ? ORDER BY name',
+          [like, like],
+        )
+      }
+      res.json(users)
+    }
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'server error' })
+  }
+})
+
+app.get('/api/users/:id', authMiddleware, requireRole('librarian', 'admin'), async (req, res) => {
+  const id = req.params.id
+  try {
+    const user = await getAsync('SELECT id, username, name, role FROM users WHERE id = ?', [id])
+    if (!user) return res.status(404).json({ error: 'not found' })
+    res.json(user)
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'server error' })
+  }
+})
+
+app.put('/api/users/:id', authMiddleware, requireRole('librarian', 'admin'), async (req, res) => {
+  const id = req.params.id
+  const { username, name, role, password } = req.body
+  try {
+    const existing = await getAsync('SELECT * FROM users WHERE id = ?', [id])
+    if (!existing) return res.status(404).json({ error: 'not found' })
+
+    if (username && username !== existing.username) {
+      const conflict = await getAsync('SELECT * FROM users WHERE username = ? AND id != ?', [username, id])
+      if (conflict) return res.status(400).json({ error: 'username taken' })
+    }
+
+    if (password) {
+      const hashed = await bcrypt.hash(password, 10)
+      await runAsync('UPDATE users SET username = ?, name = ?, role = ?, password = ? WHERE id = ?', [username || existing.username, name || existing.name, role || existing.role, hashed, id])
+    } else {
+      await runAsync('UPDATE users SET username = ?, name = ?, role = ? WHERE id = ?', [username || existing.username, name || existing.name, role || existing.role, id])
+    }
+
+    const updated = await getAsync('SELECT id, username, name, role FROM users WHERE id = ?', [id])
+    res.json(updated)
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'server error' })
+  }
+})
+
+app.delete('/api/users/:id', authMiddleware, requireRole('admin'), async (req, res) => {
+  const id = req.params.id
+  try {
+    await runAsync('DELETE FROM users WHERE id = ?', [id])
+    res.status(204).end()
   } catch (err) {
     console.error(err)
     res.status(500).json({ error: 'server error' })
