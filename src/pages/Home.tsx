@@ -4,7 +4,7 @@ const Home: React.FC = () => {
   return (
     <div>
       <h2>Witamy w Bibliotekopol</h2>
-      <p>Prosty system do zarządzania katalogiem biblioteki szkolnej — demo frontend.</p>
+      <p>Prosty system do zarządzania katalogiem biblioteki szkolnej.</p>
     </div>
   )
 }
